@@ -1,0 +1,1329 @@
+---
+title: "Seminar Code - Markdown"
+author: "Lukas Pitz"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Cleaning and Adjustment
+
+The code in this part of the Markdown is used to load and clean the data set provided by Nicolas Carbone on his kaagle account.
+To run this code, the path on your local device needs to get adjusted. See vaiable "my_path" below.
+
+IMPORTANT: This part may be skipped, we provide a cleaned version of the data set in the zip-file. 
+
+## Packages 
+
+```{r}
+# Used Packages
+library(tidyverse) # data cleaning and manipulation
+library(dplyr) # data cleaning and manipulation
+library(Hmisc) # Statistical parameters
+library(glmnet) # Lasso, Ridge and elastic Net (lambda via cross-validation)
+library(hdm) # Lasso by Chernozhukov, Hansen and Spindler (lambda via theoretical foundation)
+library(mosaic)  # standardizing variables
+library(lmtest) # tests for linear regression model
+library(nlme) # GLS
+library(olsrr) # Variance Inflation Factor (VIF)
+library(rpart) # Regression Tree models
+library(rpart.plot) # Visualization tool for Regression Tree models
+library(ipred) # Regression Tree models with bagging
+library(randomForest) # Random Forest models
+library(ranger) # Alternative package for Random Forest models
+library(networkD3) # Create Sankey diagrams
+library(latex2exp) # enables latex expressions in plots
+library(aod) # Implementation of Wald tests
+library(gbm) # Gradient Boosted Tree models
+library(xgboost) # Faster implementation of Gradient Boosted Tree models
+
+# Path to data on my own device
+my_path = 'G:/Meine Ablage/Uni Köln/Seminar Empirical Methods and Data Analysis/Data/'
+
+```
+
+## Loading and transforming data
+
+```{r}
+# Data set from 2014
+df_2014 = read.csv(paste(my_path,'2014_Financial_Data.csv', sep='')) %>%
+    add_column(year = 2014) %>% # add column with year
+    rename('price_var' = 'X2015.PRICE.VAR....') %>% # rename outcome variable
+    relocate('year', .before = 'X') %>% # relocate year column
+    relocate('price_var', .after = 'X') %>% # relocate outcome variable column
+    arrange(X) # arrange rows by company name
+
+# Data set from 2015
+df_2015 = read.csv(paste(my_path,'2015_Financial_Data.csv', sep='')) %>%
+    add_column(year = 2015) %>%
+    rename('price_var' = 'X2016.PRICE.VAR....') %>%
+    relocate('year', .before = 'X') %>%
+    relocate('price_var', .after = 'X') %>%
+    arrange(X)
+
+# Data set from 2016
+df_2016 = read.csv(paste(my_path,'2016_Financial_Data.csv', sep='')) %>%
+    add_column(year = 2016) %>%
+    rename('price_var' = 'X2017.PRICE.VAR....') %>%
+    relocate('year', .before = 'X') %>%
+    relocate('price_var', .after = 'X') %>%
+    arrange(X)
+
+# Data set from 2017
+df_2017 = read.csv(paste(my_path,'2017_Financial_Data.csv', sep='')) %>%
+    add_column(year = 2017) %>%
+    rename('price_var' = 'X2018.PRICE.VAR....') %>%
+    relocate('year', .before = 'X') %>%
+    relocate('price_var', .after = 'X') %>%
+    arrange(X)
+
+# Data set from 2018
+df_2018 = read.csv(paste(my_path,'2018_Financial_Data.csv', sep='')) %>%
+    add_column(year = 2018) %>%
+    rename('price_var' = 'X2019.PRICE.VAR....') %>%
+    relocate('year', .before = 'X') %>%
+    relocate('price_var', .after = 'X') %>%
+    arrange(X)
+
+# Find stocks by name which are included in each data frame 
+common_stocks = Reduce(intersect, list(df_2014$X,df_2015$X,df_2016$X,df_2017$X,df_2018$X))
+
+# Delete stocks which are not included in each data frame
+df_2014 = df_2014[df_2014$X %in% common_stocks,]
+df_2015 = df_2015[df_2015$X %in% common_stocks,]
+df_2016 = df_2016[df_2016$X %in% common_stocks,]
+df_2017 = df_2017[df_2017$X %in% common_stocks,]
+df_2018 = df_2018[df_2018$X %in% common_stocks,]
+
+# Merge data frames
+df_full = rbind(df_2014,df_2015,df_2016,df_2017,df_2018) %>%
+          arrange(X)
+```
+
+## Data quality check A (before cleaning)
+
+Get a first overview of data quality and data types. 
+
+```{r}
+# Check data types
+table(sapply(df_full, class))
+
+# Number of columns with more than 30%  NA's
+sum(sapply(df_full, function(x){sum(is.na(x))/nrow(df_full)}) > 0.3)
+
+# Number of columns with more than 30% zeros (replace NA's with zeros because R has issues with handling NA's)
+df_full_no_NA = replace(df_full, is.na(df_full),0)
+
+# Count the number of columns with more than 30% zeros in them
+sum(sapply(df_full_no_NA,function(x){sum(x==0)/nrow(df_full_no_NA)}) > 0.3) 
+```
+
+## Manuel Data Cleaning and Manipulation: Zeros and dummy variables
+
+```{r}
+### Excluding columns which contain many missing observations (NA's and zeros) ###
+
+# Delete class column (contains non relevant information)
+df_full_1 = df_full %>% subset(select = -c(Class))
+
+# Create new data frame which contains only columns with less than 30% zeros as observations
+df_full_1 = df_full_no_NA[sapply(df_full_no_NA,function(x){sum(x==0)/nrow(df_full_no_NA)}) < 0.3]
+
+### Creating sector dummy variables ###
+df_full_1$Basic_Materials         = ifelse(df_full$Sector == 'Basic Materials',1,0)
+df_full_1$Communication_Services  = ifelse(df_full$Sector == 'Communication Services',1,0)
+df_full_1$Consumer_Cyclical       = ifelse(df_full$Sector == 'Consumer Cyclical',1,0)
+df_full_1$Consumer_Defensive      = ifelse(df_full$Sector == 'Consumer Defensive',1,0)
+df_full_1$Energy                  = ifelse(df_full$Sector == 'Energy',1,0)
+df_full_1$Financial_Services      = ifelse(df_full$Sector == 'Financial Services',1,0)
+df_full_1$Healthcare              = ifelse(df_full$Sector == 'Healthcare',1,0)
+df_full_1$Industrials             = ifelse(df_full$Sector == 'Industrials',1,0)
+df_full_1$Real_Estate             = ifelse(df_full$Sector == 'Real Estate',1,0)
+df_full_1$Technology              = ifelse(df_full$Sector == 'Technology',1,0)
+df_full_1$Utilities               = ifelse(df_full$Sector == 'Utilities',1,0)
+
+# Delete sector column
+df_full_1 = df_full_1 %>% subset( select = -c(Sector))
+
+```
+
+## Manuel Data Cleaning and Manipulation: Delete identical columns
+
+```{r}
+# Number of identical pairs of columns
+sum(duplicated(as.list(df_full_1)))
+
+# Names of column pairs
+colnames(df_full_1[duplicated(as.list(df_full_1))])
+
+# Drop one of the duplicated columns
+df_full_1 = df_full_1[!duplicated(as.list(df_full_1))]
+
+```
+
+## Manuel Data Cleaning and Manipulation: Outliers
+
+We experimented with two approaches to identify outliers. Firstly by looking at the standard deviation of each data point from its column mean. Secondly, by declaring data points in the 0.01% and 99.9% quantile (columnwise) as outliers. We settled with the second approach, because the quantiles are not affected by the magnitude of the outliers their self, compared to the standard deviation which proved to be useful.  
+
+```{r}
+
+### Solution A: standard deviations from the means
+# 
+# # Determine standard deviation per column
+# sd_df_full = df_full_1 %>%
+#   apply(2,sd) %>%
+#   as.data.frame() %>%
+#   rownames_to_column()
+# 
+# ### Imputing rows with outliers ###
+# df_full_2 = df_full_1
+# 
+# # Step one: Replace all outliers with NAs
+# 
+# # loop over columns (start at i=3 to skip year and name columns; skip the last 11 dummy variable columns)
+# for (i in 3:(length(df_full_2) - 11)){ 
+#   
+#   for(j in 1:nrow(df_full_2)){ # loop over rows
+#    
+#      if(!((df_full_2[j,i] < (mean(df_full_1[,i]) + 5 * sd_df_full[i,2])) &
+#        (df_full_2[j,i] > (mean(df_full_1[,i]) - 5 * sd_df_full[i,2])))){
+#         df_full_2[j,i] = NA}
+#   }
+#   }
+# 
+# # Step two: Impute all NAs with the column mean 
+# df_full_2 = df_full_2 %>% mutate_all(~ifelse(is.na(.x), mean(.x, na.rm = TRUE), .x))
+# 
+# #Compare Results
+# summary(df_full_1[,'price_var']) # before imputing outliers
+# summary(df_full_2[,'price_var']) # after imputing outliers
+
+
+### Solution B: Trimming the 0.01% and 99.9% quantile per column ###
+
+df_full_2 = df_full_1
+
+# Determine quantile thresholds per column
+
+quant_df_full = df_full_1 %>%
+  subset(select= -c(year,X)) %>%
+  apply(2, quantile, probs = c(0.001,0.999)) %>%
+  as.data.frame() 
+
+
+# Step 1: Replace all outliers with NAs
+
+for (i in 3:(length(df_full_2) - 11)){ # loop over columns
+  
+  for(j in 1:nrow(df_full_2)){ # loop over rows
+   
+     if(
+       df_full_2[j,i] < quant_df_full[1,i-2] || # smaller than the lower 0.1% quantile threshold
+       df_full_2[j,i] > quant_df_full[2,i-2] # larger than the 99.9% quantile threshold
+       ){df_full_2[j,i] = NA}
+  }
+  }
+
+# Step 2: Impute all NAs with the column mean 
+df_full_2 = df_full_2 %>% mutate_all(~ifelse(is.na(.x), mean(.x, na.rm = TRUE), .x))
+
+#Compare Results
+summary(df_full_1[,'price_var']) # before imputing outliers
+summary(df_full_2[,'price_var']) # after imputing outliers
+
+```
+
+## Manuel Data Cleaning and Manipulation: Multicollinearity
+
+We utilize the Variance Inflation Factor (VIF) to detect and exclude features within our high-dimensional data set which contribute little additional information due to their severe collinearity to other considered features. For more details see Appenix A in our term paper.
+
+
+```{r}
+# Delete one sector dummy variable to prevent perfect collinearity
+df_full_3 = df_full_2 %>% subset(select = -c(year,X,Utilities))
+
+# Check for multicollinearity via VIF (Variance Inflation Factor)
+
+# 1 Step: Run without loop
+test_OLS = lm(data=df_full_3,formula= price_var ~ . )
+
+vif = ols_vif_tol(test_OLS)
+
+vif = vif[vif$VIF > 10,] %>% arrange(desc(VIF)) # select all features with VIF>10 and arrange in desc order
+
+print(nrow(vif)) # number of variables with a vif higher than 10 and therefore evidence for multicollinearity 
+
+df_full_3 = df_full_3[ , -which(names(df_full_3) %in% c(vif[1,1]))] # drop column with highest VIF
+
+# 2. Step: Run with loop
+while (nrow(vif) > 2 ){
+test_OLS = lm(data=df_full_3,formula= price_var ~ . )
+
+vif = ols_vif_tol(test_OLS)
+
+vif = vif[vif$VIF > 10,] %>% arrange(desc(VIF)) # select all features with VIF>10 and arrange in desc order
+
+df_full_3 = df_full_3[ , -which(names(df_full_3) %in% c(vif[1,1]))] # drop column with highest VIF
+
+print(nrow(vif))
+}
+
+# Add year and company name column back to data frame
+df_full_3 = cbind(df_full_2$year, df_full_2$X, df_full_3) %>%
+            rename('year' = 'df_full_2$year') %>%
+            rename('X' = 'df_full_2$X')
+
+# Number of columns drooped due to multicollinearity
+ncol(df_full_2) - ncol(df_full_3)
+
+# List of variables which got dropped due to multicollinearity
+setdiff(union(names(df_full_2), names(df_full_3)), intersect(names(df_full_2), names(df_full_3)))
+```
+
+## Data quality check B (after cleaning)
+
+Scan data after cleaning for irregularities which could hint to errors in the code or further need for cleaning. 
+
+```{r}
+### Check if cleaning worked ###
+
+# Number of columns with NA's
+sum(sapply(df_full_3, function(x){sum(is.na(x))/nrow(df_full_2)}) > 0)
+
+# Number of columns with more than 30%  zeros (should expect 11 due to the created dummy variables)
+sum(sapply(df_full_3,function(x){sum(x==0)/nrow(df_full_2)}) > 0.3)
+
+# Check number of companies in data set after cleaning
+length(unique(df_full_3$X))
+
+# Check if columns only contain one value
+sum(sapply(df_full_3,function(x) length(unique(x))==1))
+
+# Check data types
+table(sapply(df_full_3, class))
+
+### Check if outlier imputation worked properly ###
+
+# Solution A applied:
+
+# # Determine distance of each observation to the pre imputation mean in units of standard deviations
+# outliers = df_full_3
+
+# for (i in 3:(length(df_full_3) - 11)){ # start at i=3 due to the character column
+#   outliers[,i] = abs(df_full_3[,i] - mean(df_full_1[,i])) / sd_df_full[i,2]
+# }
+ 
+# # Results should be in [0,5]
+# max(outliers[,-c(1,2)])
+# min(outliers[,-c(1,2)])
+
+# Solution B applied:
+
+```
+
+
+## Data checkpoint: Load cleaned data set
+
+Possibility to load data set incorporating cleaned data to avoid re-run of code above. 
+
+```{r}
+#write.csv(df_full_3,paste(my_path,'cleaned_full_data_set.csv', sep=''),row.names=FALSE)
+
+# Read in cleaned data set
+df_full_3 = read.csv(paste(my_path,'cleaned_full_data_set.csv', sep=''))
+  
+```
+
+## Split data set in training and test data set
+
+```{r}
+# Training data set (2014-2017)
+df_train = df_full_3 %>% filter(year %in% c(2014,2015,2016,2017))
+
+# Test data set (2018)
+df_test = df_full_3 %>% filter(year == 2018)
+
+# Function for Root-Mean-Squared-Error (RMSE)
+RMSE = function(y, yhat){
+  return(sqrt( mean( (y - yhat)^2) ) )}
+```
+
+
+# Machine Learn (ML) Models
+
+The following code chunks correspond to different ML models, we apply. More details w.r.t. each models theoretical concept and our applied tuning process are provided in our term paper within the corresponding (sub-)sections.
+
+
+## Lasso Model
+
+Lasso model implementation by package: glmnet
+
+```{r}
+### Hyperperameter tuning for Lasso model ###
+ 
+# Independent  regressors
+x_train = data.matrix(subset(df_train, select = -c(year,X,price_var)))
+x_test = data.matrix(subset(df_test, select = -c(year,X,price_var)))
+
+# Dependent variable
+y_train = as.vector(df_train$price_var) 
+y_test = as.vector(df_test$price_var) 
+
+# Hyper parameter tuning (lambda)
+set.seed(123)
+
+find_best_lambda_lasso = cv.glmnet(x=x_train,y=y_train,
+                        type.measure = 'mse', # loss measure
+                        nfolds = 10, # number of folds for cross-validation
+                        alpha = 1, # alpha = 1 corresponds to the Lasso-estimator
+                        standardize = TRUE, # normalize variables
+                        intercept = TRUE,
+                        trace.it=TRUE)
+
+print(find_best_lambda_lasso)
+
+# Optimal lambda value that minimizes training MSE
+best_lambda_lasso = find_best_lambda_lasso$lambda.min
+
+lowest_MSE_lasso =  min(find_best_lambda_lasso$cvm)
+
+plot(find_best_lambda_lasso) # Plot MSE over lambda values
+
+
+### Training Lasso model using best lambda ###
+
+lasso_model_glmnet = glmnet(x=x_train,y=y_train,
+                        lambda = best_lambda_lasso,
+                        type.measure = 'mse', # loss measure
+                        alpha = 1, # alpha = 1 corresponds to the Lasso-estimator
+                        standardize = TRUE, # normalize variables
+                        intercept = TRUE,
+                        trace.it=FALSE)
+
+coef_exact_lasso = coef(lasso_model_glmnet, s = best_lambda_lasso, exact=T, x=x_train,y=y_train) %>%as.vector()
+sum(coef_exact_lasso !=0) # count the non-zero coefficients
+
+
+### Testing model on in and out-of-sample data ###
+
+# Fit the best selected model on the test data
+lasso_train_fitted = cbind(1,x_train) %*% coef_exact_lasso
+lasso_test_fitted = cbind(1,x_test) %*% coef_exact_lasso
+
+RMSE_Lasso_train = RMSE(df_train$price_var,lasso_train_fitted)
+RMSE_Lasso_test = RMSE(df_test$price_var,lasso_test_fitted)
+```
+
+
+## Ridge Approach
+
+Ridge model implementation by package: glmnet
+
+```{r}
+### Hyperperameter tuning for Ridge model ###
+ 
+# Independent  regressors
+x_train = data.matrix(subset(df_train, select = -c(year,X,price_var)))
+x_test = data.matrix(subset(df_test, select = -c(year,X,price_var)))
+
+# Dependent variable
+y_train = as.vector(df_train$price_var) 
+y_test = as.vector(df_test$price_var) 
+
+# Hyper parameter tuning (lambda)
+set.seed(123)
+
+find_best_lambda_ridge = cv.glmnet(x=x_train,y=y_train,
+                        type.measure = 'mse', # loss measure
+                        nfolds = 10, # number of folds for cross-validation
+                        alpha = 0, # alpha = 0 corresponds to the ridge-estimator
+                        standardize = TRUE, # normalize variables
+                        intercept = TRUE,
+                        trace.it=TRUE)
+
+print(find_best_lambda_ridge)
+
+# Find optimal lambda value that minimizes MSE
+best_lambda_ridge = find_best_lambda_ridge$lambda.min
+
+lowest_MSE_ridge =  min(find_best_lambda_ridge$cvm)
+
+plot(find_best_lambda_ridge) # Plot MSE over lambda values
+
+
+### Training Lasso model using best lambda ###
+
+ridge_model_glmnet = glmnet(x=x_train,y=y_train,
+                        lambda = best_lambda_ridge,
+                        type.measure = 'mse', # loss measure
+                        alpha = 0, # alpha = 1 corresponds to the ridge-estimator
+                        standardize = TRUE, # normalize variables
+                        intercept = TRUE,
+                        trace.it=FALSE)
+
+coef_exact_ridge = coef(ridge_model_glmnet, s = best_lambda_ridge, exact=T, x=x,y=y) %>% as.vector()
+
+sum(coef_exact_ridge !=0) # count the non-zero coefficients (with ridge should be 170)
+
+
+### Testing model on in and out-of-sample data ###
+
+# Fit the best selected model on the test data
+ridge_train_fitted = cbind(1,x_train) %*% coef_exact_ridge
+ridge_test_fitted = cbind(1,x_test) %*% coef_exact_ridge
+
+RMSE_Ridge_train = RMSE(df_train$price_var,ridge_train_fitted)
+RMSE_Ridge_test = RMSE(df_test$price_var,ridge_test_fitted)
+```
+
+
+## Elastic Net Approach
+
+Elastic Net model implementation by package: glmnet
+
+```{r}
+### Hyperperameter tuning for Elastic Net model ###
+ 
+# Independent  regressors
+x_train = data.matrix(subset(df_train, select = -c(year,X,price_var)))
+x_test = data.matrix(subset(df_test, select = -c(year,X,price_var)))
+
+# Dependent variable
+y_train = as.vector(df_train$price_var) 
+y_test = as.vector(df_test$price_var) 
+
+# Hyper parameter tuning (lambda and alphas)
+
+# Tuning elastic net to find best alpha and lambda combination (model with lowest MSE across all alphas)
+
+alphas = seq(from=0,to=1, length.out=100) # create vector with all alphas desired to test
+
+best_lamda_elastic = c() # create empty vector to store best lambda per run 
+
+Lowest_MSE_elastic = c() # create empty vector to store lowest MSE per run 
+
+
+for (i in 1:length(alphas)){
+set.seed(123) # reproducibility
+
+find_best_lambda_alpha_elastic = cv.glmnet(x=x_train,y=y_train,
+                        type.measure = 'mse', # loss measure 
+                        nfolds = 10, # number of folds for cross-validation
+                        alpha = alphas[i],
+                        standardize = TRUE, # normalize variables
+                        intercept = TRUE,
+                        trace.it = FALSE) # no need for progress bars
+
+best_lamda_elastic[i] = find_best_lambda_alpha_elastic$lambda.min
+Lowest_MSE_elastic[i] = min(find_best_lambda_alpha_elastic$cvm)
+}
+
+# Store results in data frame and sort depending on Lowest_MSE_elastic ascending 
+elastic_results = cbind(alphas,best_lamda_elastic,Lowest_MSE_elastic) %>%
+                  as.data.frame()
+
+elastic_results %>% arrange(Lowest_MSE_elastic)
+
+# Visualization
+ggplot(elastic_results, aes(x=alphas,y=Lowest_MSE_elastic)) +
+  geom_point() +
+  geom_line() +
+  labs(x="alpha",y="Validation MSE") +
+  theme_light()
+
+```
+
+
+## Regression Tree model
+
+Regression Tree model implementation by package: rpart 
+
+```{r}
+### Hyperparameter tuning for Regression Tree model ###
+
+# Create grid of hyperparameters for tuning 
+hyper_grid = expand.grid(
+  minsplit = seq(5, 20, 1), # min obs. in a nod to perform split
+  maxdepth = seq(1, 10, 1)) # max depth of the final tree
+
+nrow(hyper_grid) # number of models to be specified
+
+models = list() # create empty list to store tree models in 
+
+# Loop over the different hyperparameters
+for (i in 1:nrow(hyper_grid)) {
+  
+  # get minsplit and maxdepth values at row i
+  minsplit = hyper_grid[i,1]
+  maxdepth = hyper_grid[i,2]
+  
+  set.seed(123)
+
+  # train a model and store in the list
+  models[[i]] = rpart(
+    formula = price_var ~ .,
+    data    = df_train %>% subset(select = -c(year,X)),
+    method  = "anova",
+    control = list( minsplit = minsplit, # min obs. in a nod to perform split
+                    minbucket = round(minsplit/3), # min number of obs. in terminal leaf
+                    xval = 10, # number of folds in cross-validation
+                    maxdepth = maxdepth) # max depth of the final tree
+  )
+  print(i) # to check progress of loop
+  }
+
+# # Function to get cp
+ get_cp = function(x) {
+   min    = which.min(x$cptable[, "xerror"])
+   cp = x$cptable[min, "CP"]}
+
+# Function to get minimum error across models
+get_min_error = function(x) {
+  min    = which.min(x$cptable[, "xerror"])
+  xerror = x$cptable[min, "xerror"]}
+
+# Add corresponding hyperparameters to grid
+hyper_grid = hyper_grid %>%
+             mutate(cp = purrr::map_dbl(models, get_cp),
+                    error = purrr::map_dbl(models, get_min_error)) %>%
+             arrange(error) 
+
+hyper_grid
+
+
+### Training Regression Tree model using optimal hyperparameters ###
+
+set.seed(123)
+
+tree_model= rpart(
+    formula = price_var ~ .,
+    data    = df_train %>% subset(select = -c(year,X)),
+    method  = "anova",
+    control = list( minsplit = hyper_grid[1,1], # min obs. in a nod to perform split
+                    minbucket = round(hyper_grid[1,1]/3), # min number of obs. in terminal leaf
+                    xval = 10, # number of folds in cross-validation
+                    cp = hyper_grid[1,3], # complexity parameter
+                    maxdepth = hyper_grid[1,2])) # max depth of the final tree
+
+# Values for split process
+printcp(tree_model)
+
+# Visualize Tree
+rpart.plot(tree_model, type = 2)
+
+
+### Testing model on in and out-of-sample data ###
+regression_tree_fitted_train = predict(tree_model,
+                                 newdata = df_train %>% subset(select = -c(year,X)) )
+
+regression_tree_fitted_test = predict(tree_model,
+                                 newdata = df_test %>% subset(select = -c(year,X)) )
+
+RMSE_Tree_train = RMSE(df_train$price_var,regression_tree_fitted_train)
+RMSE_Tree_test = RMSE(df_test$price_var,regression_tree_fitted_test)
+```
+
+
+## Regression Tree model utilizing bagging
+
+Regression Tree model utilizing bagging implementation by package: ipred 
+
+```{r}
+### Hyperparameter tuning for Regression Tree model utilizing bagging ###
+
+# Sequence of number of trees 
+ntree = seq(from=10,to=100,by=2)
+
+sum(ntree) # number of total trees to be estimated 
+
+# Create empty vector to store out-of-bag RMSE values
+rmse = vector(mode = "numeric", length = length(ntree))
+
+# Bagged Regression Tree model
+for (i in 1:length(ntree)) {
+  
+  set.seed(123) # Reproducibility 
+  
+  model = bagging(
+  formula = price_var ~ .,
+  data    = df_train %>% subset(select = -c(year,X)),
+  coob    = TRUE, # use the out-of-bag sample to calculate validation error
+  nbagg   = ntree[i])
+  
+  rmse[i] = model$err # store the out-of-bag validation RMSE in vector
+  
+  print(i) # to check progress of loop
+
+  }
+
+# Data Frame of number of trees with corresponding RMSE
+rmse_ntree = as.data.frame(cbind(ntree,rmse)) %>% arrange(rmse)
+
+# Plot out-of-bag RMSE vs. number of trees
+ggplot(data = data.frame(ntree,rmse), aes(x=ntree,y=rmse)) +
+  geom_line(linewidth=1) +
+  geom_vline(xintercept = rmse_ntree[1,1], color="#eb8060",lty = "dashed",linewidth=1) + # number of tree with lowest out-of-bag RMSE
+  labs(x="Number of Trees",y="OOB RMSE") + 
+  theme_classic()
+
+
+### Training Regression Tree model utilizing bagging using optimal hyperparameters ###
+
+set.seed(123) # Reproducibility
+
+bag_tree_model = bagging(
+                        formula = price_var ~ .,
+                        data    = df_train %>% subset(select = -c(year,X)),
+                        coob    = TRUE, # use the out-of-bag sample to calculate validation error
+                        nbagg   = rmse_ntree[1,1])
+
+
+### Testing model on in and out-of-sample data ###
+
+regression_bag_tree_fitted_train = predict(bag_tree_model,
+                                 newdata = df_train %>% subset(select = -c(year,X)) )
+
+regression_bag_tree_fitted_test = predict(bag_tree_model,
+                                 newdata = df_test %>% subset(select = -c(year,X)) )
+
+RMSE_Bag_Tree_train = RMSE(df_train$price_var,regression_bag_tree_fitted_train)
+RMSE_Bag_Tree_test = RMSE(df_test$price_var,regression_bag_tree_fitted_test)
+```
+
+
+## Random Forest (RF) model
+
+Random Forest model utilizing bagging implementation by packages: randomForest and ranger
+
+```{r}
+### Hyperperameter tuning for Random Forest model ###
+
+
+### Step 1: Find optimal number of trees (using RF implementation by package: randomForest) ###
+
+set.seed(123) # Set set to make results reproducible
+
+# Estimate RF with up to 1000 trees
+RFmodel_tree = randomForest(price_var ~ ., 
+                       data = df_train %>% subset(select = -c(year,X)),
+                       ntree = 1000, # max. number of trees averaged over
+                       importance = TRUE)
+
+
+# Extract out-of-bag MSE and number of trees
+RFmodel_OOB_MSE_ntree = data.frame(cbind(1:1000,RFmodel_tree$mse))
+
+# Visualize error rate while averaging over more and more trees 
+ggplot(data = RFmodel_OOB_MSE_ntree, aes(x=X1,y=X2)) +
+  geom_line(linewidth=1) + 
+  geom_vline(xintercept = which.min(RFmodel_OOB_MSE_ntree$X2), color="#eb8060",lty = "dashed",linewidth=1) + # number of tree with lowest out-of-bag RMSE
+  labs(x="Number of Trees",y="OOB MSE") + 
+  theme_classic()
+
+
+### Step 2: Find the optimal values for: (using RF implementation by package: ranger) ###
+
+# mtry =  max number of randomly drawn split variables to consider at each node 
+# min.node.size = minimal number of observations in a (potential node) to consider a split
+# min.bucket = minimal observations in the terminal leaf
+# max.depth = maximal depth of tree models (in terms of levels)
+
+default_mtry = floor(sqrt(length(df_train %>% subset(select = -c(year,X))))) # default mtry chose by rule of thumb 
+
+# Create grid of hyperparameters for tuning 
+hyper_grid_RF = expand.grid(
+  min.node.size = seq(1, 15, 2), 
+  maxdepth = seq(1, 10, 2), 
+  mtry = seq(2, 2*default_mtry - 2, by = 1))  
+  
+nrow(hyper_grid_RF) # number of RF models to be trained
+
+OOB_MSE_RF_base_learner = c()
+
+set.seed(123) # Reproducibility
+
+for (i in 1:nrow(hyper_grid_RF)) {
+
+RFmodel_base_learner = ranger(
+                  formula   = price_var ~ ., 
+                  data      = df_train %>% subset(select = -c(year,X)), 
+                  num.trees = 500,
+                  mtry      = hyper_grid_RF[i,3],
+                  min.node.size = hyper_grid_RF[i,1],
+                  min.bucket = round(hyper_grid_RF[i,1]/3),
+                  max.depth = hyper_grid_RF[2,i],
+                  oob.error= TRUE,
+                  verbose = FALSE) # Turn of internal progress report 
+
+OOB_MSE_RF_base_learner[i] = RFmodel_base_learner$prediction.error
+
+print(round((i/nrow(hyper_grid_RF)*100),4)) # to check progress of loop in percent
+}
+
+RFmodel_OOB_MSE_base_learner = cbind(hyper_grid_RF,OOB_MSE_RF_base_learner) %>% # add OOB MSE to hyper grid
+  arrange(OOB_MSE_RF_base_learner)
+
+
+### Fitting model using the optimal tuning parameters ### 
+
+set.seed(123) # Reproducibility
+
+Random_Forest_model = ranger(
+                        formula   = price_var ~ ., 
+                        data      = df_train %>% subset(select = -c(year,X)), 
+                        num.trees = 500, 
+                        mtry      = RFmodel_OOB_MSE_base_learner[3,1],
+                        min.node.size = RFmodel_OOB_MSE_base_learner[1,1],
+                        min.bucket = round(RFmodel_OOB_MSE_base_learner[1,1]/3),
+                        max.depth = RFmodel_OOB_MSE_base_learner[2,1],
+                        oob.error= TRUE,
+                        verbose = FALSE) # Turn of internal progress report
+
+
+### Testing model on in and out-of-sample data ###
+
+regression_random_forest_fitted_train = predict(Random_Forest_model,
+                                          data = df_train %>% subset(select = -c(year,X)))
+
+regression_random_forest_fitted_test = predict(Random_Forest_model,
+                                          data = df_test %>% subset(select = -c(year,X)))
+
+RMSE_Random_Forest_train = RMSE(df_train$price_var,regression_random_forest_fitted_train$predictions)
+RMSE_Random_Forest_test = RMSE(df_test$price_var,regression_random_forest_fitted_test$predictions)
+```
+
+
+## Gradient Boosted Regression Trees (GBRT) 
+
+Gradient Boosted Regression Trees model implementation by package: xgboost
+
+```{r}
+### Hyperperameter tuning for Gradient Boosting Regression Tree Model ###
+
+# Independent  regressors
+x_train = data.matrix(subset(df_train, select = -c(year,X,price_var)))
+x_test = data.matrix(subset(df_test, select = -c(year,X,price_var)))
+
+# Dependent variable
+y_train = data.matrix(df_train$price_var) 
+y_test = data.matrix(df_test$price_var) 
+
+
+# Set grid search values for tuning
+hyper_grid_GBRT = expand.grid(
+  eta = c(0.005,0.01, 0.05, 0.1), # learning rate for Gradient Descent Algorithm  
+  max_depth = c(5, 7, 9, 11), # maximum tree depth 
+  min_child_weight = c(5, 7, 9, 11), # minimum number of observations required in terminal node
+  subsample = c(0.65, 0.8, 1), # fraction of training data used to train each tree
+  colsample_bytree = c(0.7,0.8, 0.9, 1), # fraction of features used to train each tree
+  optimal_trees = 0,               # place to store later results 
+  min_RMSE = 0)                     # place to store later results 
+
+
+nrow(hyper_grid_GBRT) # number of different models to train
+
+
+for(i in 1:nrow(hyper_grid_GBRT)) {
+  
+# Create temporary hyperparameter list
+params = list(
+    eta = hyper_grid_GBRT$eta[i],
+    max_depth = hyper_grid_GBRT$max_depth[i],
+    min_child_weight = hyper_grid_GBRT$min_child_weight[i],
+    subsample = hyper_grid_GBRT$subsample[i],
+    colsample_bytree = hyper_grid_GBRT$colsample_bytree[i])
+  
+set.seed(123) # for reproducibility
+  
+GBRT_tuning = xgb.cv(
+    params = params,
+    data = x_train,
+    label = y_train,
+    metrics = "rmse", # use RMSE for validation in cross-validation process
+    nrounds = 1000, # Max number of iterations (different tree models)
+    nfold = 5,
+    objective = "reg:squarederror",  # Regression with squared loss
+    verbose = 0,               # Show no running messages
+    early_stopping_rounds = 30) # Stop if no improvement for 30 consecutive trees (early stopping)
+
+# Add  min cross-validation RMSE and optimal number of trees for model with lowest cross-validation RMSE to  grid  
+hyper_grid_GBRT$optimal_trees[i] = which.min(GBRT_tuning$evaluation_log$test_rmse_mean)
+hyper_grid_GBRT$min_RMSE[i] = min(GBRT_tuning$evaluation_log$test_rmse_mean)
+
+print(round((i/nrow(hyper_grid_GBRT)*100),4)) # to check progress of loop in percent 
+}
+
+
+### Fitting model using the optimal tuning parameters ### 
+
+# Optimal hyperparameter w.r.t. tuning procedure 
+row_num_opt = which.min(hyper_grid_GBRT$min_RMSE) # row index number in grid object with lowest cross-validation error
+
+params_optimal = list(
+  eta = hyper_grid_GBRT[row_num_opt,1],
+  max_depth = hyper_grid_GBRT[row_num_opt,2],
+  min_child_weight = hyper_grid_GBRT[row_num_opt,3],
+  subsample =  hyper_grid_GBRT[row_num_opt,4],
+  colsample_bytree =  hyper_grid_GBRT[row_num_opt,5])
+
+
+set.seed(123) # for reproducibility
+
+
+GBRT_model = xgboost(
+  params = params_optimal,
+  data = x_train,
+  label = y_train,
+  nrounds = hyper_grid_GBRT[row_num_opt,6],
+  objective = "reg:squarederror",
+  verbose = 0)
+
+### Testing model on in and out-of-sample data ###
+
+regression_GBRT_fitted_train = predict(GBRT_model, newdata = x_train)
+
+regression_GBRT_fitted_test = predict(GBRT_model, newdata = x_test)
+
+RMSE_GBRT_train = RMSE(df_train$price_var,regression_GBRT_fitted_train)
+RMSE_GBRT_test = RMSE(df_test$price_var,regression_GBRT_fitted_test)
+
+
+```
+
+
+# Traditional regression-based statistical models
+
+The following code chunks correspond to different regression-based models, we apply. More details w.r.t. each are provided in our term paper within the corresponding (sub-)sections.
+
+## Mean (of training data) as estimator
+
+```{r}
+# Calculating the mean to use as estimator
+mean_train = mean(df_train$price_var)
+
+
+### Testing model on in and out-of-sample data ###
+
+RMSE_Mean_train = RMSE(df_train$price_var,mean_train)
+RMSE_Mean_test = RMSE(df_test$price_var,mean_train)
+
+```
+
+
+## Linear regression: Pooled OLS
+
+```{r}
+### Training and specification tests for Pooled OLS model ### 
+
+# Training linear model
+linear_OLS = lm(data=df_train %>% subset(select = -c(year,X)),
+                formula= price_var ~ . )
+
+# summary(linear_OLS, robust= TRUE) # Apply robust standard errors to cope with heteroscedastisity
+
+### Specification tests ###
+
+# Test for heteroscestasticity (Breusch-Pagan Test)
+bptest(linear_OLS)
+
+# Visualize residuals: Plot Residuals vs. fitted values
+plot(fitted(linear_OLS), resid(linear_OLS), xlab='Fitted Values', ylab='Residuals')
+abline(0,0)
+
+# Test for autocorrelation (Durban-Watson Test)
+dwtest(linear_OLS)
+
+### Testing model on in and out-of-sample data ###
+
+ols_train_fitted = predict(linear_OLS, newdata = df_train)
+ols_test_fitted = predict(linear_OLS, newdata = df_test)
+
+RMSE_OLS_train = RMSE(df_test$price_var,ols_train_fitted)
+RMSE_OLS_test = RMSE(df_test$price_var,ols_test_fitted)
+```
+
+
+## Linear regression: Pooled Weighted Least Squares (WLS)
+
+```{r}
+### Training and specification tests for Pooled Weighted Least Squares model ### 
+
+x_train = data.matrix(subset(df_train, select = -c(year,X,price_var)))
+
+
+### Step 1: Estimate the (unknown) variances ###
+y_train_hat = linear_OLS$fitted # fitted Pooled OLS price_var values
+
+squ_log_residuals = log((df_train$price_var - y_train_hat)^2) # squared log residuals
+
+cond_mean = lm(squ_log_residuals ~ x_train)
+
+var_estimated = exp(cond_mean$fitted)
+
+### Step 2: Calculating the weights of the variance-covariance matrix ###
+weights_WLS = 1 / var_estimated
+
+### Step 3: Fitting the WLS model using the estimated variance-covariance matrix ###
+
+linear_WLS = lm(data=df_train %>% subset(select = -c(year,X)),
+                formula= price_var ~ . ,
+                weights = weights_WLS)
+
+summary(linear_WLS)
+
+
+### Specification tests ###
+
+# Test for heteroscestasticity (Breusch-Pagan Test)
+bptest(linear_WLS)
+
+# Visualize residuals: Plot Residuals vs. fitted values
+plot(fitted(linear_WLS), resid(linear_WLS), xlab='Fitted Values', ylab='Residuals')
+abline(0,0)
+
+### Testing model on in and out-of-sample data ###
+wls_train_fitted = predict(linear_WLS, newdata = df_train)
+wls_test_fitted = predict(linear_WLS, newdata = df_test)
+
+RMSE_WLS_train = RMSE(df_train$price_var,wls_train_fitted)
+RMSE_WLS_test = RMSE(df_test$price_var,wls_test_fitted)
+
+```
+
+
+# Mincer-Zarnowitz-Regression of ou-of-sample predictions and statistical tests
+
+We compare the performance of our models among other things by the R-squared of a Mincer-Zarnowitz-Regression which is a regression of the true values on the fitted values received from on applied model at a time. 
+
+```{r}
+### Create function to simplify the calculations for the individual t-tests ###
+custom_test =function(model){
+  t_statistic_constant = (coef(model)[1] - 0)/vcov(model)[1,1]
+  p_value_constant = 1 - pnorm(abs(t_statistic_constant))
+  t_statistic_coefficient = (coef(model)[2] - 1)/vcov(model)[2,2] 
+  p_value_coefficient = 1 - pnorm(abs(t_statistic_coefficient))
+
+  results = matrix(c(t_statistic_constant,t_statistic_coefficient,p_value_constant,p_value_coefficient),
+                   nrow=2,ncol=2, byrow = F,
+                   dimnames = list(c("constant", "coefficient"),c("t-statistic", "p-value")))
+  return(results)
+}
+
+### Mincer-Zarnowitz-Regression fo each model and related test ###
+
+MZ_Mean = lm(df_test %>% subset(select = -c(year,X)),
+                formula= price_var ~ rep(mean_train,3726))
+
+# OLS
+MZ_OLS = lm(df_test %>% subset(select = -c(year,X)),
+                formula= price_var ~ ols_test_fitted)
+
+# Test Hypothesis: coef = 1 and intercept = 0 simultaneously (use Wald test)   
+wald.test(Sigma = vcov(MZ_OLS), b = coef(MZ_OLS), Terms = c(1,2), H0 = c(0,1))
+
+# Test Hypothesis: coef = 1 and intercept = 0 separately
+custom_test(MZ_OLS)
+
+
+# WLS
+MZ_WLS = lm(df_test %>% subset(select = -c(year,X)),
+                formula= price_var ~ wls_test_fitted)
+
+# Test Hypothesis: coef = 1 and intercept = 0 (use Wald test)   
+wald.test(Sigma = vcov(MZ_WLS), b = coef(MZ_WLS), Terms = c(1,2), H0 = c(0,1))
+
+# Test Hypothesis: coef = 1 and intercept = 0 separately
+custom_test(MZ_WLS)
+
+
+# Ridge
+MZ_Ridge = lm(df_test %>% subset(select = -c(year,X)),
+                formula= price_var ~ ridge_test_fitted)
+
+# Test Hypothesis: coef = 1 and intercept = 0 (use Wald test)   
+wald.test(Sigma = vcov(MZ_Ridge), b = coef(MZ_Ridge), Terms = c(1,2), H0 = c(0,1))
+
+# Test Hypothesis: coef = 1 and intercept = 0 separately
+custom_test(MZ_Ridge)
+
+
+# Lasso
+MZ_Lasso = lm(df_test %>% subset(select = -c(year,X)),
+                formula= price_var ~ lasso_test_fitted)
+
+# Test Hypothesis: coef = 1 and intercept = 0 (use Wald test)   
+wald.test(Sigma = vcov(MZ_Lasso), b = coef(MZ_Lasso), Terms = c(1,2), H0 = c(0,1)) # does not make sense, since lasso collapses to intercept/mean
+
+
+# Tree
+MZ_Tree =  lm(df_test %>% subset(select = -c(year,X)),
+                formula= price_var ~ regression_tree_fitted)
+
+# Test Hypothesis: coef = 1 and intercept = 0 (use Wald test)   
+wald.test(Sigma = vcov(MZ_Tree), b = coef(MZ_Tree), Terms = c(1,2), H0 = c(0,1)) # does not make sense, since tree model collapses to mean
+
+
+# Tree utilizing Bagging 
+MZ_Bag_Tree = lm(df_test %>% subset(select = -c(year,X)),
+                formula= price_var ~ regression_bag_tree_fitted)
+
+# Test Hypothesis: coef = 1 and intercept = 0 (use Wald test)   
+wald.test(Sigma = vcov(MZ_Bag_Tree), b = coef(MZ_Bag_Tree), Terms = c(1,2), H0 = c(0,1))
+
+# Test Hypothesis: coef = 1 and intercept = 0 separately
+custom_test(MZ_Bag_Tree)
+
+
+# Random Forest
+MZ_Random_Forest = lm(df_test %>% subset(select = -c(year,X)),
+                formula= price_var ~ regression_random_forest_fitted_test$predictions)
+
+# Test Hypothesis: coef = 1 and intercept = 0 (use Wald test)   
+wald.test(Sigma = vcov(MZ_Random_Forest), b = coef(MZ_Random_Forest), Terms = c(1,2), H0 = c(0,1))
+
+# Test Hypothesis: coef = 1 and intercept = 0 separately
+custom_test(MZ_Random_Forest)
+
+
+# GBRT
+MZ_GBRT = lm(df_test %>% subset(select = -c(year,X)),
+                formula= price_var ~ regression_GBRT_fitted_test)
+
+# Test Hypothesis: coef = 1 and intercept = 0 (use Wald test)   
+wald.test(Sigma = vcov(MZ_GBRT), b = coef(MZ_GBRT), Terms = c(1,2), H0 = c(0,1))
+
+# Test Hypothesis: coef = 1 and intercept = 0 separately
+custom_test(MZ_GBRT)
+
+
+MZ_R2 = as.data.frame(c(summary(MZ_OLS)$r.squared,
+                        summary(MZ_WLS)$r.squared,
+                        summary(MZ_Lasso)$r.squared,
+                        summary(MZ_Ridge)$r.squared,
+                        summary(MZ_Random_Forest)$r.squared,
+                        summary(MZ_GBRT)$r.squared))
+
+```
+
+
+# Visualizations 
+
+The following code-chunks are used to create different diagrams and figures for our presentation and term paper. 
+
+
+## Data Cleaning Process (Sankey diagram)
+
+```{r}
+# A: Observation (rows)
+nodes = data.frame("name" = 
+ c("2014 (3808)", "2015 (4120)", "2016 (4797)", "2017 (4960)","2018 (4392)","Common Stocks (18630)", "Without Outliers (16694)","","Imputation (18630)", "Training data (14904)", "Test data (3726)"))
+
+links = as.data.frame(matrix(c(
+ 0, 5, 3808, # 2014 - Common Stocks
+ 1, 5, 4120, # 2015 - Common Stocks
+ 2, 5, 4797, # 2016 - Common Stocks
+ 3, 5, 4960, # 2017 - Common Stocks
+ 4, 5, 4392, # 2018 - Common Stocks
+ 5, 6, 18630, # Common Stocks - Without Outliers
+ 6, 7, 16694, # Without Outliers -
+ 7, 8, 18630,
+ 8, 9, 14904, # Imputation - Training Data
+ 8, 10, 3726), # Imputation - Test Data
+ byrow = TRUE, ncol = 3))
+
+ names(links) = c("source", "target", "value")
+
+ sankeyNetwork(Links = links, Nodes = nodes,
+ Source = "source", Target = "target",
+ Value = "value", NodeID = "name",
+ units = 'observations', fontSize= 20, nodeWidth = 40, sinksRight = TRUE)
+ 
+ # B: Features (columns)
+
+nodes = data.frame("name" = 
+ c("All Feautures (223)", "Adding Sector Dummies (233)", "Columns < 30% of zeros (171)","", "Deleting identical columns (163)", "Columns with to much collinearity (136)"))
+
+links = as.data.frame(matrix(c(
+  0, 1, 223,
+  1, 2, 233,
+  2, 3, 171,
+  3, 4, 163,
+  4, 5, 136),
+ byrow = TRUE, ncol = 3))
+
+ names(links) = c("source", "target", "value")
+
+ sankeyNetwork(Links = links, Nodes = nodes,
+ Source = "source", Target = "target",
+ Value = "value", NodeID = "name",
+ units = 'observations', fontSize= 17, nodeWidth = 40, sinksRight = TRUE)
+ 
+```
+
+
+## Out-of-sample RMSE accros different models
+
+```{r}
+
+RMSE_train = data.frame(RMSE = c(RMSE_Mean_train,RMSE_OLS_train,RMSE_WLS_train,RMSE_Ridge_train,RMSE_Lasso_train,RMSE_Random_Forest_train,RMSE_GBRT_train),Model = c("Mean","OLS","WLS","Ridge","Lasso","RF","GBRT" ), Sample = rep("In-Sample",7), row = c(3,7,5,2,4,1,6))
+
+RMSE_test = data.frame(RMSE = c(RMSE_Mean_test,RMSE_OLS_test,RMSE_WLS_test,RMSE_Ridge_test,RMSE_Lasso_test,RMSE_Random_Forest_test,RMSE_GBRT_test),Model = c("Mean","OLS","WLS","Ridge","Lasso","RF","GBRT" ),Sample = rep("Out-of-Sample",7), row = c(3,7,5,2,4,1,6))
+
+RMSE_all = rbind(RMSE_train,RMSE_test)
+
+ggplot(data = RMSE_all, aes(x = reorder(Model, row), y = RMSE, fill = Sample)) +
+  geom_bar(stat="identity", position = "dodge") +
+  labs(x = "", y = "RMSE",fill="") +
+  coord_cartesian(ylim=c(50,70)) +
+  theme_light(base_size = 14)
+```
+
+
+## Out-of-sample R^{2} from Mincer-Zarnowitz-Regression
+
+```{r}
+Rsqu = data.frame(R2 = c(rep(0,7)),
+                  Model = c("OLS","WLS","Ridge","Lasso","Tree","Bagging Tree","RF" )) %>% mutate(row = row_number())
+
+# OLS and WLS
+Rsqu[1,1] = summary(MZ_OLS)$r.squared * 100
+Rsqu[2,1] = summary(MZ_WLS)$r.squared * 100
+
+ggplot(data = Rsqu, aes(x = reorder(Model,row), y = R2)) +
+  geom_bar(stat="identity", fill=c("#eb8060","#eb8060","steelblue","steelblue","steelblue","steelblue","steelblue")) +
+  labs(x = "", y = TeX(r"($R^{2}_{MZ}*100$)")) +
+  geom_text(aes(label=round(R2,3)), vjust=1.6, color="white", size=3.5) +
+  theme_light()
+
+# Ridge and Lasso
+Rsqu[3,1] = summary(MZ_Ridge)$r.squared * 100
+Rsqu[4,1] = summary(MZ_Lasso)$r.squared * 100
+
+ggplot(data = Rsqu, aes(x = reorder(Model,row), y = R2)) +
+  geom_bar(stat="identity", fill=c("steelblue","steelblue","#eb8060","#eb8060","steelblue","steelblue","steelblue")) +
+  labs(x = "", y = TeX(r"($R^{2}_{MZ} *100$)")) +
+  geom_text(aes(label=round(R2,3)), vjust=1.6, color="white", size=3.5) +
+  theme_classic()
+
+# Tree 
+Rsqu[5,1] = summary(MZ_Tree)$r.squared * 100
+
+ggplot(data = Rsqu, aes(x = reorder(Model,row), y = R2)) +
+  geom_bar(stat="identity", fill=c("steelblue","steelblue","steelblue","steelblue","#eb8060","steelblue","steelblue")) +
+  labs(x = "", y = TeX(r"($R^{2}_{MZ} *100$)")) +
+  geom_text(aes(label=round(R2,3)), vjust=1.6, color="white", size=3.5) +
+  theme_classic()
+
+# Tree Bagging
+Rsqu[6,1] = summary(MZ_Bag_Tree)$r.squared * 100
+
+ggplot(data = Rsqu, aes(x = reorder(Model,row), y = R2)) +
+  geom_bar(stat="identity", fill=c("steelblue","steelblue","steelblue","steelblue","steelblue","#eb8060","steelblue")) +
+  labs(x = "", y = TeX(r"($R^{2}_{MZ} *100$)")) +
+  geom_text(aes(label=round(R2,3)), vjust=1.6, color="white", size=3.5) +
+  theme_classic()
+
+# Random Forest
+Rsqu[7,1] = summary(MZ_Random_Forest)$r.squared * 100
+
+ggplot(data = Rsqu, aes(x = reorder(Model,row), y = R2)) +
+  geom_bar(stat="identity", fill=c("steelblue","steelblue","steelblue","steelblue","steelblue","steelblue","#eb8060")) +
+  labs(x = "", y = TeX(r"($R^{2}_{MZ} *100$)")) +
+  geom_text(aes(label=round(R2,3)), vjust=1.6, color="white", size=3.5) +
+  theme_classic()
+
+
+
+### Visualization for our term paper including result for GBRT ###
+Rsqu = data.frame(R2 = MZ_R2[,1] * 100, # R2 in percentage points
+                  Model = c("OLS","WLS","Lasso","Ridge","RF","GBRT"), row= c(2,5,1,3,6,4))
+
+
+ggplot(data = Rsqu, aes(x = reorder(Model,row), y = R2)) +
+  geom_bar(stat="identity", fill=c("steelblue","steelblue","steelblue","steelblue","steelblue","steelblue")) +
+  labs(x = "", y = TeX(r"($R^{2}_{MZ} *100$)")) +
+  geom_text(aes(label=round(R2,3)), vjust=1.6, color="white", size=3.5) +
+  theme_classic(base_size = 14)
+
+```
+
+## Scatter plot for tree example
+
+This scatter plot is used to explain the basic algorithm of regression trees. 
+
+```{r}
+# Example Tree model
+
+ggplot(data=df_train, aes(x= Days.Payables.Outstanding, y=EPS)) +
+  geom_point() +
+  geom_segment(aes(x = -500 , y = 0, xend = 33000, yend = 0,color = "#eb8060")) +
+  geom_vline(xintercept = 33000, color="#eb8060") +
+  annotate("text", x = 40000, y = -7500, color = "#eb8060", label = "R1", size=6) +
+  annotate("text", x = 15000, y = 1000, color = "#eb8060", label = "R2", size=6) +
+  annotate("text", x = 15000, y = -7500, color = "#eb8060", label = "R3", size=6) +
+  labs(x="Days Payable Outstanding",y="Earnings Per Share (EPS)") +
+  theme_classic(base_size = 16) +
+  theme(legend.position = "none")
+```
+
+## Tree model figrue
+
+This figure of a Regression Tree model helps to explain the structure of Tree models. 
+
+```{r}
+tree_example = rpart(
+    formula = price_var ~ .,
+    data    = df_train %>% subset(select = -c(year,X)),
+    method  = "anova",
+    control = list( minsplit = 5, # min obs. in a nod to perform split
+                    minbucket = round(5), # min number of obs. in terminal leaf
+                    xval = 10, # number of folds in cross-validation
+                    cp = 0.03139987, # complexity parameter
+                    maxdepth = 2)) # max depth of any node of the final tree)
+
+# Visualize Tree
+rpart.plot(tree_example , type = 2)
+
+# Test model on out-of-sample test data
+regression_tree_fitted_tree_example = predict(tree_example,
+                                      newdata = df_test %>% subset(select = -c(year,X)) )
+
+MSE_Tree = mean((df_test$price_var - regression_tree_fitted_tree_example)^2)
+
+RMSE_Tree = RMSE(df_test$price_var,regression_tree_fitted_tree_example)
+
+```
+
+
+## Example figure GBRT model
+
+```{r}
+
+# OPtimal hyperparameters w.r.t. our tuning procress
+
+set.seed(123)
+
+GBRT_example = xgb.cv(
+  params = params_optimal,
+  data = x_train,
+  label = y_train,nfold = 5,
+  nrounds = 1000, # include more than optimal number of iterations/trees to visualize overfitting
+  objective = "reg:squarederror",
+  verbose = 0)
+
+colors = c("training error" ="steelblue","validation error"="#eb8060")
+
+# Visualize training and validation MSE
+ggplot(data = GBRT_example$evaluation_log) +
+  geom_line(aes(iter, train_rmse_mean, color = "training error" ), size=1) + 
+  geom_line(aes(iter, test_rmse_mean, color = "validation error"), size=1) +
+  geom_vline(xintercept = as.numeric(GBRT_example$evaluation_log[which.min(GBRT_example$evaluation_log$test_rmse_mean),1]), color="black",lty = "dashed",size=0.7)+  # number of tree with lowest RMSE
+  labs(x="Number of Trees/ Iterations",y="RMSE", color="") + 
+  scale_x_continuous(breaks=seq(0,1000,100)) +
+  theme_light()
+
+```
+
